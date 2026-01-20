@@ -3,9 +3,9 @@ name: build test
 on:
   push:
     paths-ignore:
-      - '*.md'
+      - "*.md"
   pull_request:
-    branches: [ master ]
+    branches: [master]
 
 jobs:
   build-linux:
@@ -14,12 +14,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: install libva-dev
         run: |
           sudo apt-get update
           sudo apt-get install -y libva-dev
-
+      - name: Create version based on current date
+        id: date
+        run: |
+          today=$(TZ='Europe/Amsterdam' date +'%Y-%m-%d')
+          version=$(echo $today | sed 's/-0*/./g')
+          echo "today=${today}"
+          echo "version=${version}"
+          echo "today=${today}" >> $GITHUB_OUTPUT
+          echo "version=${version}" >> $GITHUB_OUTPUT
       - name: build ffmpeg
         run: |
           while sleep 300; do echo "=====[ $SECONDS seconds still running ]====="; done &
@@ -28,103 +35,31 @@ jobs:
       - name: check shared library
         run: |
           ldd ./workspace/bin/ffmpeg
-      - name: test run ffmepg
+      - name: test run ffmpeg
         run: |
           ./workspace/bin/ffmpeg -buildconf
-      - name: clean up
+      - name: clean up and package
         run: |
-          ./build-ffmpeg --cleanup
-
-  build-macos:
-    name: build in native macOS
-    runs-on: macos-15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: build ffmpeg
-        run: |
-          while sleep 300; do echo "=====[ $SECONDS seconds still running ]====="; done &
-          SKIPINSTALL=yes VERBOSE=yes ./build-ffmpeg --build
-          kill %1
-      - name: check shared library
-        run: |
-          otool -L ./workspace/bin/ffmpeg
-      - name: test run ffmepg
-        run: |
-          ./workspace/bin/ffmpeg -buildconf
-      - name: clean up
-        run: |
-          ./build-ffmpeg --cleanup
-
-  build-docker:
-    name: build in docker
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: pull base image
-        id: ubuntu_pull
-        run: |
-          docker pull ubuntu:24.04
-      - name: run if ubuntu_pull failed
-        if: failure() && steps.ubuntu_pull.outcome == 'failure'
-        run: |
-          docker pull ubuntu:24.04
-      - name: build ffmpeg
-        run: |
-          docker build -t ffmpeg:ubuntu -f Dockerfile .
-      - name: test run ffmepg
-        run: |
-          docker run --rm ffmpeg:ubuntu -buildconf
-
-  build-cuda-ubuntu-docker:
-    name: build in ubuntu docker with cuda
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Free up disk space
-        run: |
-          rm -rf /usr/share/dotnet && rm -rf /opt/ghc && rm -rf "/usr/local/share/boost"
-          rm -rf /opt/hostedtoolcache && cd /opt && find . -maxdepth 1 -mindepth 1 '!' -path ./containerd '!' -path ./actionarchivecache '!' -path ./runner '!' -path ./runner-cache -exec rm -rf '{}' ';'
-          docker system prune -af
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: pull base image
-        id: cuda_ubuntu_pull
-        run: |
-          docker pull nvidia/cuda:12.6.2-devel-ubuntu22.04
-          docker pull ubuntu:22.04
-      - name: run if cuda_ubuntu_pull failed
-        if: failure() && steps.cuda_ubuntu_pull.outcome == 'failure'
-        run: |
-          docker pull nvidia/cuda:12.6.2-devel-ubuntu22.04
-          docker pull ubuntu:22.04
-      - name: build ffmpeg
-        run: |
-          docker build -t ffmpeg:cuda-ubuntu -f cuda-ubuntu.dockerfile .
-      - name: test run ffmepg
-        run: |
-          docker run --rm ffmpeg:cuda-ubuntu -buildconf
-
-  build-full-static:
-    name: full static build in docker
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: pull base image
-        id: cuda_ubuntu_pull
-        run: |
-          docker pull nvidia/cuda:12.6.2-devel-ubuntu22.04
-      - name: run if cuda_ubuntu_pull failed
-        if: failure() && steps.cuda_ubuntu_pull.outcome == 'failure'
-        run: |
-          docker pull nvidia/cuda:12.6.2-devel-ubuntu22.04
-      - name: build ffmpeg
-        run: |
-          docker build -t ffmpeg:cuda-static -f full-static.dockerfile .
-      - name: test run ffmepg
-        run: |
-          docker run --rm ffmpeg:cuda-static -buildconf
+          mkdir -p ./workspace/bin
+          find . > ./workspace/bin/ffmpeg-files.txt
+          cd ./workspace
+          tar cfvz ./ffmpeg.tar.gz ./bin
+          gpg --quiet --batch --yes --symmetric --cipher-algo AES256  --passphrase="${{ secrets.GPG_PASSPHRASE }}" --output ffmpeg.gpg ffmpeg.tar.gz
+      - name: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg
+          path: |
+            ./workspace/ffmpeg.gpg
+      - name: Release
+        if: github.ref_name == 'master'
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ steps.date.outputs.today }}
+          commit: ${{ github.sha }}
+          tag: ${{ steps.date.outputs.today }}
+          body: "Personal ffmpeg build (${{ steps.date.outputs.today }}). Not to be distributed. Build your own."
+          makeLatest: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: "./workspace/ffmpeg.gpg"
